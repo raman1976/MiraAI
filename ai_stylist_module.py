@@ -1,4 +1,4 @@
-# ai_stylist_module.py (FINAL VERSION)
+# ai_stylist_module.py (FINAL VERSION WITH LIVE VISION INTEGRATION)
 from google import genai
 from google.genai import types
 import os
@@ -9,13 +9,15 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 MODEL_NAME = 'gemini-2.5-flash' 
 
 class AIStylistModule:
-    def __init__(self):
+    # FIX A: Accept the vision_processor instance
+    def __init__(self, vision_processor): 
         print("Initializing AI Stylist Module...")
         if not GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY environment variable not set.")
             
         self.client = genai.Client(api_key=GEMINI_API_KEY)
         self.system_prompt = self._get_system_prompt()
+        self.vision_processor = vision_processor # Store the instance
         
         # --- FIX APPLIED: Initialize chat with system instruction ---
         self.chat = self.client.chats.create(
@@ -52,15 +54,20 @@ class AIStylistModule:
 
     def generate_outfit_suggestion(self, user_command):
         """
-        Generates an outfit suggestion by combining the user's query 
-        and the current wardrobe state, then calling the Gemini API.
+        Generates an outfit suggestion by combining the user's query,
+        live vision data, and the current wardrobe state.
         """
+        # FIX B: Get live vision data and combine it with the wardrobe summary
         wardrobe_summary = get_wardrobe_summary()
+        
+        # Get live outfit data from the processor instance
+        live_outfit_detections = self.vision_processor.get_live_detections()
         
         # Craft the full message to the model
         full_command = (
-            f"**USER COMMAND:** '{user_command}'. "
-            f"**CURRENT WARDROBE (USE ONLY THESE ITEMS):**\n{wardrobe_summary}"
+            f"**USER COMMAND:** '{user_command}'.\n"
+            f"**CURRENT LIVE OUTFIT (Visible in camera):** {live_outfit_detections}\n"
+            f"**WARDROBE DATABASE (FOR RECOMMENDATIONS):**\n{wardrobe_summary}"
         )
 
         try:
