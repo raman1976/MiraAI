@@ -1,0 +1,7 @@
+# .gitignore
+
+# 1. Ignore the virtual environment folder
+mira_env/
+
+# 2. Ignore the file containing sensitive API keys
+.env
