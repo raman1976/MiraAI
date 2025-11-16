@@ -1,116 +1,78 @@
-# vision_module.py (STREAMLIT READY - With Live Detection Tracking)
-from ultralytics import YOLO
-import numpy as np
-import threading
+# vision_module.py (MediaPipe Hand Tracker)
+import cv2
+import mediapipe as mp
 import time
-import os
+import threading
 import random
-from wardrobe_db import add_item_to_wardrobe
-import cv2 # Keep import for image processing utilities
 
-# --- Configuration ---
-YOLO_MODEL = 'yolov8n-seg.pt' 
-CONFIDENCE_THRESHOLD = 0.5 
-CLASS_MAP = {
-    0: 'person', 
-    24: 'bag', 
-    27: 'backpack',
-    31: 'handbag',
-    41: 'tie', 
-    42: 'suitcase',
-    # Note: Use a dedicated fashion model for better results than the COCO classes below.
-}
-
-# --- Helper Function for Placeholder Color ---
+# --- Helper Function for Placeholder Color (Still needed for the prompt) ---
 def extract_color(frame, bbox):
     """Placeholder for actual dominant color extraction logic."""
     colors = ["red", "black", "white", "navy blue", "beige", "gray", "green"]
     return random.choice(colors)
 
+# Initialize MediaPipe Hands
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+
 class VisionProcessor:
-    """Handles YOLO initialization and frame processing for Streamlit."""
+    """Handles MediaPipe initialization and non-blocking frame processing."""
     
     def __init__(self, item_save_callback=None):
-        print("Initializing Vision Processor...")
-        self.model = YOLO(YOLO_MODEL) 
+        print("Initializing Vision Processor (MediaPipe)...")
         self.item_save_callback = item_save_callback
         self.last_save_time = time.time()
         self.save_debounce_period = 5 # seconds
         
-        # FIX A: Variable to store the latest detections for the AI Stylist
-        self.latest_live_outfit = [] 
+        # New: MediaPipe hands model instance
+        self.hands = mp_hands.Hands(
+            min_detection_confidence=0.7, 
+            min_tracking_confidence=0.5
+        )
+        
+        # New: Variable to store the latest live status (e.g., "HAND DETECTED")
+        self.latest_live_status = "No activity." 
         
         print("Vision Processor Ready.")
 
     def process_frame(self, frame):
-        """Processes a single BGR frame from the webcam."""
+        """Processes a single BGR frame from the webcam using MediaPipe."""
         
-        # Streamlit-webrtc often sends BGR or RGB; ensure BGR for standard processing
-        BGR_frame = frame 
-
-        results = self.model.predict(BGR_frame, conf=CONFIDENCE_THRESHOLD, verbose=False)
-        detected_items = []
+        # Convert the BGR frame to RGB for MediaPipe processing
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        if results and results[0] is not None:
-            detected_items = self._process_yolo_results(results[0], BGR_frame)
-            
-            # FIX B: Update the latest live outfit detection
-            # We filter out 'person' as it's not useful for styling feedback.
-            self.latest_live_outfit = [
-                f"{item['label']} ({item['color']})" 
-                for item in detected_items 
-                if item['label'] != 'person'
-            ]
-            
-            # Draw bounding boxes and annotations onto the frame for display
-            annotated_frame = results[0].plot()
-        else:
-            # If nothing is detected, clear the live outfit list
-            self.latest_live_outfit = [] 
-            annotated_frame = BGR_frame
+        # Process the frame
+        results = self.hands.process(frame_rgb)
+        annotated_frame = frame
+        current_status = "No activity."
 
-        # Check for save condition (now runs per frame)
-        if detected_items and (time.time() - self.last_save_time) > self.save_debounce_period:
-            for item in detected_items:
-                if item['label'] != 'person': # Only save clothing/accessories
-                    print(f"NEW ITEM DETECTED & SAVED: {item['label']} ({item['color']})")
-                    add_item_to_wardrobe(item)
-                    if self.item_save_callback:
-                        self.item_save_callback(f"I've saved the {item['label']} to your virtual wardrobe!")
-            self.last_save_time = time.time()
+        if results.multi_hand_landmarks:
+            current_status = "Hand detected."
             
-        # Return the processed frame (in BGR format)
+            # Draw hand landmarks onto the frame
+            for hand_landmarks in results.multi_hand_landmarks:
+                mp_drawing.draw_landmarks(
+                    annotated_frame,
+                    hand_landmarks,
+                    mp_hands.HAND_CONNECTIONS,
+                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+                    mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2)
+                )
+
+        # Update the latest live status for the AI Stylist
+        self.latest_live_status = current_status
+            
+        # NOTE: Since MediaPipe is lighter than YOLO, we can keep the frame rate higher.
+        
         return annotated_frame
 
-    def _process_yolo_results(self, results, frame): 
-        """Extracts and formats the clothing detection results."""
-        processed_items = []
-        
-        for box in results.boxes:
-            class_id = int(box.cls[0].item())
-            confidence = box.conf[0].item()
-            label = CLASS_MAP.get(class_id, self.model.names[class_id])
-
-            if confidence >= CONFIDENCE_THRESHOLD: 
-                item = {
-                    'label': label,
-                    'confidence': round(confidence, 2),
-                    'bbox': box.xyxy[0].tolist(),
-                    'class_id': class_id,
-                    'color': extract_color(frame, box.xyxy[0].tolist()) 
-                }
-                processed_items.append(item)
-                
-        return processed_items
-    
-    # FIX C: Add the method required by AIStylistModule
+    # FIX C: Method required by AIStylistModule
     def get_live_detections(self):
         """
-        Returns a string summary of the currently detected items 
-        that can be used as context for the AI stylist.
+        Returns a string summary of the current live status for the AI stylist.
         """
-        if self.latest_live_outfit:
-            # Join the list into a comma-separated string
-            return ", ".join(self.latest_live_outfit) 
-        else:
-            return "Nothing in focus."
+        # We will use this status to infer the user's current engagement
+        return self.latest_live_status
+
+    # NOTE: _process_yolo_results is removed as YOLO is gone.
+    # We will rely on the AI stylist to understand the 'No activity' vs 'Hand detected' status.

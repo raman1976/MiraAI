@@ -32,16 +32,14 @@ def initialize_session_state():
     # 2. Initialize Vision Processor
     if 'vision_processor' not in st.session_state:
         print("Initializing Vision Processor...")
-        # Initialize Vision Processor and pass the voice speaker as a callback
         st.session_state.vision_processor = VisionProcessor(
             item_save_callback=st.session_state.voice_module.speak_response
         )
         print("Vision Processor Ready.")
 
-    # 3. Initialize AI Stylist Module LAST
+    # 3. Initialize AI Stylist Module
     if 'ai_stylist' not in st.session_state:
         print("Initializing AI Stylist Module...")
-        # FIX FOR STEP 1: Pass the vision processor instance to the AI Stylist
         st.session_state.ai_stylist = AIStylistModule(
             vision_processor=st.session_state.vision_processor 
         )
@@ -53,44 +51,49 @@ def initialize_session_state():
     
     if 'command_trigger' not in st.session_state:
         st.session_state.command_trigger = False
+    
+    # Initialize the audio queue variable
+    if 'mira_audio_to_play' not in st.session_state:
+        st.session_state.mira_audio_to_play = None
+    
+    # FINAL CRITICAL FIX: Ensure the resource delay runs ONLY ONCE
+    if 'initial_delay_done' not in st.session_state:
+        st.session_state.initial_delay_done = True
+        print("Waiting 3 seconds for system to stabilize after model load...")
+        time.sleep(3) # Increased delay to 3s for certainty
+        print("Startup delay complete.")
 
-    # Send initial welcome message only on first run
+    # Send initial welcome message only on first run (after the delay check)
     if len(st.session_state.chat_history) == 0:
         welcome_text = "Hello! I'm MiraAI, your personal AI fashion stylist. What fashion question do you have for me?"
-        # Speak the response using the voice module
-        st.session_state.voice_module.speak_response(welcome_text)
+        
+        # Queue the initial response for playback
+        st.session_state.mira_audio_to_play = welcome_text
         st.session_state.chat_history.append({"role": "mira", "content": welcome_text})
+        
+    print("Application ready.")
 
 
 # --- 2. VIDEO PROCESSOR CLASS (Fixed __init__ method) ---
 class MiraAITransformer(VideoProcessorBase):
     """Handles real-time video processing and returns the annotated frame."""
 
-    # The __init__ is kept empty for safety, the processor is accessed in recv
     def __init__(self):
         pass
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         # Safely access the processor from st.session_state inside recv
         processor = st.session_state.vision_processor
-        
         img = frame.to_ndarray(format="bgr24")
-        
-        # Use the processor instance to process the frame
         annotated_img = processor.process_frame(img)
-        
         return av.VideoFrame.from_ndarray(annotated_img, format="bgr24")
 
 # --- 3. AI & CHAT LOGIC (Running in Background Thread) ---
 def process_user_command(user_command):
-    """Handles user input, calls Gemini, and updates history (in background thread)."""
+    """Handles user input, calls Gemini, and queues the result."""
 
-    # 1. Prepare messages for logging (DO NOT write to st.session_state yet)
     user_message = {"role": "user", "content": user_command}
     
-    # Give immediate audible feedback (Safe, as voice module is initialized)
-    st.session_state.voice_module.speak_response("One moment, let me check your style options...")
-
     try:
         # Generate the response using the AI stylist module
         response_text = st.session_state.ai_stylist.generate_outfit_suggestion(user_command)
@@ -100,14 +103,13 @@ def process_user_command(user_command):
 
     mira_message = {"role": "mira", "content": response_text}
 
-    # 2. FINAL SAFE UPDATE: Update all state variables ONCE under the global lock
+    # FINAL SAFE UPDATE: Update all state variables ONCE under the global lock
     with SESSION_LOCK:
-        # Append both messages at once
         st.session_state.chat_history.append(user_message)
         st.session_state.chat_history.append(mira_message)
         
-        # Speak the final response (this uses the voice_module instance from session state)
-        st.session_state.voice_module.speak_response(response_text)
+        # Queue the audio text to be played non-blockingly
+        st.session_state.mira_audio_to_play = response_text
         
         # Set trigger flag to tell the main thread to rerun and update the UI
         st.session_state.command_trigger = True
@@ -115,10 +117,21 @@ def process_user_command(user_command):
 
 # --- 4. MAIN UI FUNCTION ---
 def main():
-    # --- Check for Rerun Trigger (st.rerun() confirmed) ---
+    # --- Check for Rerun Trigger ---
     if st.session_state.command_trigger:
         st.session_state.command_trigger = False
-        st.rerun() # Correctly uses st.rerun()
+        st.rerun()
+
+    # Play queued audio in a separate thread to prevent blocking the UI
+    if st.session_state.mira_audio_to_play:
+        audio_text = st.session_state.mira_audio_to_play
+        st.session_state.mira_audio_to_play = None # Clear the queue immediately
+        
+        # LAUNCH AUDIO PLAYBACK IN A SEPARATE THREAD (NON-BLOCKING)
+        threading.Thread(
+            target=st.session_state.voice_module.speak_response,
+            args=(audio_text,)
+        ).start()
 
     st.title("✨ MiraAI: Live Personal Stylist")
     st.markdown("Your AI assistant for real-time fashion advice.")
@@ -171,10 +184,8 @@ def main():
         if user_input:
             # Launch the processor in a thread to prevent the UI from locking
             threading.Thread(target=process_user_command, args=(user_input,)).start()
-            # The thread will set 'command_trigger' to force the UI update.
 
 # --- Execute Main Function ---
 if __name__ == '__main__':
-    # Initialize all session state variables before the main UI runs
     initialize_session_state()
     main()
